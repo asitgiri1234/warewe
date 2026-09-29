@@ -1,0 +1,43 @@
+# Environment / secrets
+.env
+.env.local
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Agent output
+output/*
+!output/.gitkeep
+*.html
+!newsletter_agent/templates/**
+
+# Streamlit
+.streamlit/secrets.toml
