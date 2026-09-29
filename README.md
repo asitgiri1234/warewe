@@ -1,51 +1,49 @@
 # Newsletter Agent
 
-Mini autonomous agent that researches the latest **AI agent** news, drafts a weekly newsletter, and simulates sending it (saves HTML + subject).
+Mini autonomous agent that researches the latest **AI agent** news, drafts a weekly newsletter, self-critiques, and simulates sending it (saves HTML + subject).
 
-Built with **LangGraph**, **Groq** (LLM — key pending), **Tavily / DuckDuckGo** search, and **Streamlit**.
+Built with **LangGraph**, **Groq**, **Tavily / DuckDuckGo** search, and **Streamlit**.
 
-## Status (this commit)
+## Pipeline
 
-| Piece | Status |
-|-------|--------|
-| Project scaffold | Done |
-| Web search tool (Tavily or DuckDuckGo) | Done |
-| HTML newsletter builder (Jinja2) | Done |
-| Pre-LLM graph (`research → output`) | Done |
-| Streamlit UI shell + mode toggle | Done |
-| Groq plan / summarize / write / critique | **Next** (after `GROQ_API_KEY`) |
-| Full HITL approve/revise gate | **Next** |
+```
+goal -> plan -> research -> summarize -> write -> critique <-> write
+                                              |
+                                    HITL? -> human approve/revise
+                                              |
+                                         simulate send (HTML file)
+```
+
+Entrypoint: `run_newsletter_agent(goal, mode="autonomous"|"hitl")`.
 
 ## Setup
 
 ```bash
 python -m venv .venv
-# Windows
-.venv\Scripts\activate
-# macOS/Linux
-source .venv/bin/activate
+.venv\Scripts\activate          # Windows
+# source .venv/bin/activate     # macOS/Linux
 
 pip install -r requirements.txt
-copy .env.example .env   # then add GROQ_API_KEY when ready
+copy .env.example .env          # set GROQ_API_KEY
 ```
 
 ### Environment
 
 | Variable | Required | Notes |
 |----------|----------|-------|
-| `GROQ_API_KEY` | For LLM nodes | Get from [console.groq.com](https://console.groq.com/) |
-| `GROQ_MODEL` | No | Default `llama-3.3-70b-versatile` |
+| `GROQ_API_KEY` | Yes | [console.groq.com](https://console.groq.com/) |
+| `GROQ_MODEL` | No | Default `openai/gpt-oss-120b` |
 | `TAVILY_API_KEY` | No | If unset, search uses DuckDuckGo |
 
-## Run (pre-LLM demo)
+`.env` is gitignored — never commit keys.
 
-Works **without** a Groq key — researches public news and writes a draft HTML file:
+## Run
 
 ```bash
 streamlit run app.py
 ```
 
-Or from Python:
+Or:
 
 ```python
 from newsletter_agent import run_newsletter_agent
@@ -55,20 +53,8 @@ result = run_newsletter_agent(
 )
 print(result.subject)
 print(result.output_path)
-print(result.logs)
+print(result.critique)
 ```
-
-## Architecture (target)
-
-```
-goal → plan → research → summarize → write → critique ⇄ write
-                                              ↓
-                                    HITL? → human approve
-                                              ↓
-                                         simulate send (HTML file)
-```
-
-Entrypoint: `run_newsletter_agent(goal, mode="autonomous"|"hitl")`.
 
 ## Layout
 
@@ -76,7 +62,8 @@ Entrypoint: `run_newsletter_agent(goal, mode="autonomous"|"hitl")`.
 app.py
 newsletter_agent/
   config.py          # Groq env helpers
-  graph.py           # LangGraph + run_newsletter_agent()
+  llm.py             # chat_text / chat_json
+  graph.py           # LangGraph + run/resume
   state.py
   nodes/             # plan, research, summarize, write, critique, output
   tools/

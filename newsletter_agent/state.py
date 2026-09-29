@@ -35,6 +35,7 @@ class NewsletterState(TypedDict, total=False):
     critique: CritiqueResult
     revision_count: int
     human_feedback: str | None
+    awaiting_human: bool
     output_path: str | None
     logs: list[str]
 
@@ -56,6 +57,7 @@ def initial_state(
         "critique": {"score": 0.0, "feedback": "", "approved": False},
         "revision_count": 0,
         "human_feedback": None,
+        "awaiting_human": False,
         "output_path": None,
         "logs": [],
     }
