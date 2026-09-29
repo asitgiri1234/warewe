@@ -1,9 +1,9 @@
-"""LangGraph Newsletter Agent — full Groq-powered pipeline."""
+"""LangGraph Newsletter Agent — full Groq-powered pipeline with live streaming."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Iterator, Literal
 
 from langgraph.graph import END, START, StateGraph
 
@@ -21,6 +21,17 @@ from newsletter_agent.nodes import (
 )
 from newsletter_agent.state import NewsletterState, append_log, initial_state
 
+STEP_LABELS = {
+    "plan": "Planning",
+    "research": "Researching",
+    "summarize": "Summarizing",
+    "write": "Writing",
+    "critique": "Critiquing",
+    "bump_revision": "Revising",
+    "hitl_pause": "Awaiting human review",
+    "output": "Simulating send",
+}
+
 
 @dataclass
 class AgentResult:
@@ -35,6 +46,18 @@ class AgentResult:
     awaiting_human: bool = False
     critique: dict[str, Any] = field(default_factory=dict)
     state: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class AgentStepEvent:
+    """One live update while the agent runs."""
+
+    node: str
+    label: str
+    message: str
+    logs: list[str] = field(default_factory=list)
+    done: bool = False
+    result: AgentResult | None = None
 
 
 def _build_pre_llm_graph():
@@ -96,9 +119,63 @@ def _to_result(final: NewsletterState, mode: str, llm_ready: bool) -> AgentResul
         logs=list(final.get("logs") or []),
         mode=mode,
         llm_ready=llm_ready,
-        awaiting_human=bool(final.get("awaiting_human")),  # type: ignore[arg-type]
+        awaiting_human=bool(final.get("awaiting_human")),
         critique=dict(final.get("critique") or {}),
         state=dict(final),
+    )
+
+
+def _step_message(node: str, update: dict[str, Any]) -> str:
+    logs = update.get("logs") or []
+    if logs:
+        return str(logs[-1])
+    label = STEP_LABELS.get(node, node)
+    return f"{label} complete"
+
+
+def stream_newsletter_agent(
+    goal: str,
+    mode: Literal["autonomous", "hitl"] = "autonomous",
+) -> Iterator[AgentStepEvent]:
+    """
+    Stream live step events as the graph runs, then a final done event with AgentResult.
+    """
+    goal = (goal or "").strip()
+    if not goal:
+        raise ValueError("goal must be a non-empty string")
+
+    llm_ready = bool(get_groq_api_key())
+    state = initial_state(goal=goal, mode=mode)
+    state["logs"] = [
+        f"Goal: {goal}",
+        f"Mode: {mode}",
+        f"LLM ready: {llm_ready}",
+    ]
+    state["awaiting_human"] = False
+
+    graph = build_newsletter_graph(llm_enabled=llm_ready)
+    accumulated: dict[str, Any] = dict(state)
+
+    for event in graph.stream(state, stream_mode="updates"):
+        for node, update in event.items():
+            if not isinstance(update, dict):
+                continue
+            accumulated.update(update)
+            yield AgentStepEvent(
+                node=node,
+                label=STEP_LABELS.get(node, node.title()),
+                message=_step_message(node, update),
+                logs=list(accumulated.get("logs") or []),
+            )
+
+    result = _to_result(accumulated, mode=mode, llm_ready=llm_ready)  # type: ignore[arg-type]
+    yield AgentStepEvent(
+        node="done",
+        label="Complete",
+        message="Agent run finished",
+        logs=result.logs,
+        done=True,
+        result=result,
     )
 
 
@@ -112,23 +189,13 @@ def run_newsletter_agent(
     In HITL mode, returns after critique with awaiting_human=True until
     resume_newsletter_agent(...) is called.
     """
-    goal = (goal or "").strip()
-    if not goal:
-        raise ValueError("goal must be a non-empty string")
-
-    llm_ready = bool(get_groq_api_key())
-    state = initial_state(goal=goal, mode=mode)
-    state["logs"] = [
-        f"Goal: {goal}",
-        f"Mode: {mode}",
-        f"LLM ready: {llm_ready}",
-    ]
-    # Extra field used by HITL pause (declared loosely on state dict)
-    state["awaiting_human"] = False  # type: ignore[typeddict-item]
-
-    graph = build_newsletter_graph(llm_enabled=llm_ready)
-    final: NewsletterState = graph.invoke(state)
-    return _to_result(final, mode=mode, llm_ready=llm_ready)
+    result: AgentResult | None = None
+    for event in stream_newsletter_agent(goal, mode=mode):
+        if event.done and event.result is not None:
+            result = event.result
+    if result is None:
+        raise RuntimeError("Agent finished without a result")
+    return result
 
 
 def resume_newsletter_agent(
@@ -143,17 +210,16 @@ def resume_newsletter_agent(
 
     if decision == "approve":
         state["logs"] = append_log(state, "HITL: human approved")
-        state["awaiting_human"] = False  # type: ignore[typeddict-item]
+        state["awaiting_human"] = False
         updated = output_node(state)
         state.update(updated)  # type: ignore[arg-type]
         return _to_result(state, mode=str(mode), llm_ready=llm_ready)
 
     state["human_feedback"] = (feedback or "").strip() or "Please improve clarity and relevance."
     state["revision_count"] = int(state.get("revision_count") or 0) + 1
-    state["awaiting_human"] = False  # type: ignore[typeddict-item]
+    state["awaiting_human"] = False
     state["logs"] = append_log(state, f"HITL: human requested revise - {state['human_feedback']}")
 
-    # Re-run write -> critique -> route
     for node in (write_node, critique_node):
         state.update(node(state))  # type: ignore[arg-type]
 

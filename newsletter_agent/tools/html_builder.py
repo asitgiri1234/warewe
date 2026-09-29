@@ -15,8 +15,9 @@ def build_html_newsletter(
     subject: str,
     intro: str,
     articles: list[dict[str, Any]],
-    outro: str = "You're receiving this because you subscribed to our AI Agents digest.",
+    outro: str = "You're receiving this because you subscribed to our newsletter.",
     week_label: str | None = None,
+    newsletter_label: str = "Newsletter",
 ) -> str:
     """
     Render a clean HTML newsletter from structured content.
@@ -35,6 +36,7 @@ def build_html_newsletter(
         intro=intro,
         articles=articles,
         outro=outro,
+        newsletter_label=newsletter_label,
         week_label=week_label or now.strftime("Week of %B %d, %Y"),
         generated_at=now.strftime("%Y-%m-%d %H:%M UTC"),
     )

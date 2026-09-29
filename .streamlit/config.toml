@@ -1,0 +1,17 @@
+[server]
+headless = true
+port = 8502
+address = "localhost"
+
+[browser]
+gatherUsageStats = false
+serverAddress = "localhost"
+serverPort = 8502
+
+[theme]
+base = "light"
+primaryColor = "#2563eb"
+backgroundColor = "#f8fafc"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#0f172a"
+font = "sans serif"

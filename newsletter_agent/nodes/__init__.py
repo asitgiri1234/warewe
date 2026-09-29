@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from newsletter_agent.config import get_search_backend
+from newsletter_agent.goal_utils import derive_search_queries, derive_topic_label
 from newsletter_agent.llm import chat_json
 from newsletter_agent.state import NewsletterState, append_log
 from newsletter_agent.tools.html_builder import build_html_newsletter, save_newsletter
@@ -14,57 +16,68 @@ MAX_REVISIONS = 2
 CRITIQUE_PASS_SCORE = 7.0
 
 
+def _goal(state: NewsletterState) -> str:
+    return (state.get("goal") or "").strip()
+
+
 def plan_node(state: NewsletterState) -> dict:
     """Break the goal into steps + search queries (Groq)."""
-    goal = state.get("goal") or ""
+    goal = _goal(state)
     data = chat_json(
         system=(
             "You are the planning module of a Newsletter Agent. "
-            "Given a plain-English goal, produce a short execution plan and "
-            "3-5 focused web search queries about recent AI agent news."
+            "Given the user's plain-English goal, produce a short execution plan and "
+            "3-5 web search queries that match THEIR requested topic exactly. "
+            "IMPORTANT: Derive queries only from the goal. "
+            "If the goal is about sports, search for sports news — NOT AI, tech, or unrelated topics. "
+            "If the goal is about finance, search for finance news. "
+            "Never default to AI agents unless the goal explicitly asks for AI."
         ),
         user=json.dumps(
             {
                 "goal": goal,
                 "required_schema": {
-                    "plan": ["step strings"],
-                    "search_queries": ["query strings focused on AI agents / multi-agent news"],
+                    "plan": ["step strings tailored to the goal"],
+                    "search_queries": [
+                        "query strings matching the goal topic (e.g. sports -> 'latest NFL news', 'top soccer headlines')"
+                    ],
                 },
             }
         ),
     )
     plan = [str(x) for x in (data.get("plan") or [])][:8]
-    queries = [str(x) for x in (data.get("search_queries") or [])][:5]
+    queries = [str(x).strip() for x in (data.get("search_queries") or []) if str(x).strip()][:5]
+
     if not queries:
-        queries = [
-            "AI agents news this week",
-            "LangGraph multi-agent systems",
-            "autonomous AI agent frameworks",
-        ]
+        queries = derive_search_queries(goal)
+
     if not plan:
         plan = [
-            "Research latest AI agent news",
-            "Summarize top articles",
-            "Write and critique newsletter",
+            f"Research latest news for: {goal}",
+            "Summarize the top articles",
+            "Write and critique the newsletter",
             "Simulate send",
         ]
+
     logs = append_log(state, f"Plan: {len(plan)} steps, {len(queries)} search queries")
+    for i, q in enumerate(queries, 1):
+        logs = append_log(state, f"  Query {i}: {q}")
+
     return {"plan": plan, "search_queries": queries, "logs": logs}
 
 
 def research_node(state: NewsletterState) -> dict:
     """Run web search for planned queries (no LLM)."""
-    queries = list(state.get("search_queries") or [])
+    goal = _goal(state)
+    queries = [q.strip() for q in (state.get("search_queries") or []) if q.strip()]
     if not queries:
-        queries = [
-            "AI agents news this week",
-            "LangGraph multi-agent systems",
-            "autonomous AI agent frameworks",
-        ]
+        queries = derive_search_queries(goal)
+
+    backend = get_search_backend()
     articles = search_many(queries, max_results_per_query=5)
     logs = append_log(
         state,
-        f"Research: {len(queries)} queries -> {len(articles)} unique articles",
+        f"Research ({backend}): {len(queries)} queries -> {len(articles)} unique articles",
     )
     return {
         "search_queries": queries,
@@ -74,7 +87,8 @@ def research_node(state: NewsletterState) -> dict:
 
 
 def summarize_node(state: NewsletterState) -> dict:
-    """Pick and summarize top 5-7 articles (Groq)."""
+    """Pick and summarize top 5-7 articles matching the goal (Groq)."""
+    goal = _goal(state)
     raw = list(state.get("raw_articles") or [])
     compact = [
         {
@@ -88,14 +102,16 @@ def summarize_node(state: NewsletterState) -> dict:
     ]
     data = chat_json(
         system=(
-            "You are a news editor for an AI Agents weekly newsletter. "
-            "Select the 5-7 most relevant, non-duplicate articles about AI agents, "
-            "agent frameworks, multi-agent systems, or agent tooling. "
-            "Write a crisp 2-3 sentence summary and a one-line relevance note for each."
+            "You are a news editor preparing a newsletter. "
+            "The user's goal defines the ONLY topic you may cover. "
+            "Select the 5-7 most relevant, non-duplicate articles that DIRECTLY match the goal. "
+            "REJECT articles about unrelated topics — e.g. if the goal is sports, "
+            "do NOT include AI agents, software, or tech unless the article is clearly about sports. "
+            "Write a crisp 2-3 sentence summary and a one-line relevance note for each selected article."
         ),
         user=json.dumps(
             {
-                "goal": state.get("goal"),
+                "goal": goal,
                 "candidates": compact,
                 "required_schema": {
                     "articles": [
@@ -144,12 +160,14 @@ def summarize_node(state: NewsletterState) -> dict:
                 }
             )
 
-    logs = append_log(state, f"Summarize: kept top {len(selected)} articles")
+    logs = append_log(state, f"Summarize: kept top {len(selected)} articles for goal")
     return {"top_articles": selected, "logs": logs}
 
 
 def write_node(state: NewsletterState) -> dict:
     """Draft subject + intro/outro, render HTML via Jinja (Groq + template)."""
+    goal = _goal(state)
+    topic_label = derive_topic_label(goal)
     articles = list(state.get("top_articles") or [])
     revision = int(state.get("revision_count") or 0)
     feedback = state.get("human_feedback") or ""
@@ -158,14 +176,17 @@ def write_node(state: NewsletterState) -> dict:
 
     data = chat_json(
         system=(
-            "You write a clean weekly newsletter about AI agents. "
-            "Return a punchy email subject, a short intro paragraph, and a short outro. "
+            "You write a clean weekly newsletter. "
+            "The user's goal defines the topic — write ONLY about that topic. "
+            "Return a punchy email subject, a short intro, a short outro, and full markdown body. "
             "Do not invent articles — only reference the provided ones. "
+            "Do not mention AI agents unless the goal is about AI. "
             "Tone: professional, clear, slightly enthusiastic."
         ),
         user=json.dumps(
             {
-                "goal": state.get("goal"),
+                "goal": goal,
+                "topic_label": topic_label,
                 "articles": articles,
                 "revision_count": revision,
                 "critique_feedback": prior_feedback,
@@ -179,11 +200,11 @@ def write_node(state: NewsletterState) -> dict:
             }
         ),
     )
-    subject = str(data.get("subject") or "AI Agents Weekly Digest")
-    intro = str(data.get("intro") or "Here are this week's top AI agent stories.")
+    subject = str(data.get("subject") or f"{topic_label} Digest")
+    intro = str(data.get("intro") or f"Here are this week's top stories for {topic_label}.")
     outro = str(
         data.get("outro")
-        or "You're receiving this because you subscribed to our AI Agents digest."
+        or "You're receiving this because you subscribed to our newsletter."
     )
     markdown = str(data.get("markdown") or "")
     if not markdown:
@@ -200,6 +221,7 @@ def write_node(state: NewsletterState) -> dict:
         intro=intro,
         articles=articles,
         outro=outro,
+        newsletter_label=topic_label,
     )
     logs = append_log(
         state,
@@ -216,15 +238,20 @@ def write_node(state: NewsletterState) -> dict:
 
 def critique_node(state: NewsletterState) -> dict:
     """Self-reflect on the draft; approve or request revision (Groq)."""
+    goal = _goal(state)
     data = chat_json(
         system=(
-            "You are a strict newsletter editor. Score the draft 1-10 on relevance, "
-            "clarity, structure, and usefulness for readers interested in AI agents. "
-            "Approve only if score >= 7. If not approved, give concrete revision notes."
+            "You are a strict newsletter editor. Score the draft 1-10 on: "
+            "(1) relevance to the user's stated goal, "
+            "(2) clarity, (3) structure, (4) usefulness. "
+            "Penalize heavily if articles or content are off-topic "
+            "(e.g. AI content when goal is sports). "
+            "Approve only if score >= 7 AND content matches the goal. "
+            "If not approved, give concrete revision notes."
         ),
         user=json.dumps(
             {
-                "goal": state.get("goal"),
+                "goal": goal,
                 "subject": state.get("draft_subject"),
                 "markdown": state.get("draft_markdown"),
                 "article_count": len(state.get("top_articles") or []),
@@ -260,8 +287,10 @@ def hitl_pause_node(state: NewsletterState) -> dict:
 
 def output_node(state: NewsletterState) -> dict:
     """Simulate send: persist HTML + log subject."""
+    goal = _goal(state)
+    topic_label = derive_topic_label(goal)
     html = state.get("draft_html") or ""
-    subject = state.get("draft_subject") or "AI Agents Weekly"
+    subject = state.get("draft_subject") or f"{topic_label} Digest"
     if not html:
         articles = state.get("top_articles") or state.get("raw_articles") or []
         preview = [
@@ -276,8 +305,9 @@ def output_node(state: NewsletterState) -> dict:
         ]
         html = build_html_newsletter(
             subject=subject,
-            intro="Weekly AI Agents digest.",
+            intro=f"Weekly digest: {topic_label}.",
             articles=preview,
+            newsletter_label=topic_label,
         )
     path = save_newsletter(html)
     logs = append_log(state, f"Simulated send -> {path} | Subject: {subject}")

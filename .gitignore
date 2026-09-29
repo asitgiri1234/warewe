@@ -38,6 +38,7 @@ output/*
 !output/.gitkeep
 *.html
 !newsletter_agent/templates/**
+!docs/screenshots/**
 
 # Streamlit
 .streamlit/secrets.toml

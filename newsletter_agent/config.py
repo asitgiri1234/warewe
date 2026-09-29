@@ -1,4 +1,4 @@
-"""Environment helpers. LLM client wired after GROQ_API_KEY is provided."""
+"""Environment helpers for Groq LLM and search backends."""
 
 from __future__ import annotations
 
@@ -17,6 +17,16 @@ def get_groq_api_key() -> str | None:
 
 def get_groq_model() -> str:
     return os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip()
+
+
+def get_tavily_api_key() -> str | None:
+    key = os.getenv("TAVILY_API_KEY", "").strip()
+    return key or None
+
+
+def get_search_backend() -> str:
+    """Return 'tavily' when keyed, otherwise 'duckduckgo'."""
+    return "tavily" if get_tavily_api_key() else "duckduckgo"
 
 
 def require_groq_api_key() -> str:
