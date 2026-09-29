@@ -1,4 +1,7 @@
-"""Environment helpers for Groq LLM and search backends."""
+"""Environment helpers for Groq LLM and search backends.
+
+Reads Streamlit Cloud secrets first, then process env / local .env.
+"""
 
 from __future__ import annotations
 
@@ -10,17 +13,32 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _secret(name: str, default: str = "") -> str:
+    """Prefer st.secrets (Streamlit Cloud), then environment variables."""
+    try:
+        import streamlit as st
+
+        if name in st.secrets:
+            value = st.secrets[name]
+            if value is None:
+                return default
+            return str(value).strip()
+    except Exception:
+        pass
+    return os.getenv(name, default).strip()
+
+
 def get_groq_api_key() -> str | None:
-    key = os.getenv("GROQ_API_KEY", "").strip()
+    key = _secret("GROQ_API_KEY")
     return key or None
 
 
 def get_groq_model() -> str:
-    return os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip()
+    return _secret("GROQ_MODEL", "openai/gpt-oss-120b") or "openai/gpt-oss-120b"
 
 
 def get_tavily_api_key() -> str | None:
-    key = os.getenv("TAVILY_API_KEY", "").strip()
+    key = _secret("TAVILY_API_KEY")
     return key or None
 
 
@@ -33,7 +51,8 @@ def require_groq_api_key() -> str:
     key = get_groq_api_key()
     if not key:
         raise RuntimeError(
-            "GROQ_API_KEY is not set. Copy .env.example to .env and add your Groq key."
+            "GROQ_API_KEY is not set. Add it to Streamlit Secrets (cloud) "
+            "or to your local .env file."
         )
     return key
 
